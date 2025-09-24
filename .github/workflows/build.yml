@@ -68,7 +68,7 @@ jobs:
             runner: ubuntu-22.04
             alpine: alpine:3.20
           - arch: aarch64
-            runner: ubuntu-24.04-arm64
+            runner: ubuntu-24.04-arm
             alpine: alpine:3.20
     runs-on: ${{ matrix.runner }}
     env:
@@ -167,38 +167,30 @@ jobs:
           path: artifacts
 
       - name: Prepare upstream metadata
-        id: meta
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p out
           NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           UPSTREAM_URL="https://github.com/haskell-CI/haskell-ci/commit/${UPSTREAM_SHA}"
-          {
-            echo "upstream_repo=haskell-CI/haskell-ci"
-            echo "upstream_branch=master"
-            echo "upstream_commit=${UPSTREAM_SHA}"
-            echo "upstream_commit_url=${UPSTREAM_URL}"
-            echo "built_at=${NOW}"
-          } | tee out/upstream.txt
 
-          # Compose release notes
-          NOTES=$(
-            cat <<EOF
-Unofficial musl-static binaries for upstream haskell-CI/haskell-ci master.
+          # upstream.txt (simple key=value lines)
+          printf 'upstream_repo=%s\nupstream_branch=%s\nupstream_commit=%s\nupstream_commit_url=%s\nbuilt_at=%s\n' \
+            'haskell-CI/haskell-ci' 'master' "${UPSTREAM_SHA}" "${UPSTREAM_URL}" "${NOW}" > out/upstream.txt
 
-Upstream commit: ${UPSTREAM_SHA}
-${UPSTREAM_URL}
+          # release notes
+          cat > out/release_notes.txt <<EOF
+          Unofficial musl-static binaries for upstream haskell-CI/haskell-ci master.
 
-This tag is continuously updated. Assets have stable names:
-- haskell-ci-x86_64-musl-static.tar.gz
-- haskell-ci-aarch64-musl-static.tar.gz
+          Upstream commit: ${UPSTREAM_SHA}
+          ${UPSTREAM_URL}
 
-Each tarball contains a single executable named: haskell-ci
-EOF
-          )
-          # Save for later step
-          printf "%s" "${NOTES}" > out/release_notes.txt
+          This tag is continuously updated. Assets have stable names:
+          - haskell-ci-x86_64-musl-static.tar.gz
+          - haskell-ci-aarch64-musl-static.tar.gz
+
+          Each tarball contains a single executable named: haskell-ci
+          EOF
 
       - name: Ensure 'continuous' release exists and upload assets (clobber)
         shell: bash
