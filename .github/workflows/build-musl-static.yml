@@ -1,0 +1,129 @@
+name: Build musl static binaries (continuous)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build static (musl) on ${{ matrix.runner }} (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x86_64
+            alpine: alpine:3.20
+          - runner: ubuntu-24.04-arm64
+            arch: aarch64
+            alpine: alpine:3.20
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare cache folders
+        run: |
+          mkdir -p .ci-cache/${{ matrix.arch }}/cabal
+          mkdir -p out
+
+      - name: Cache cabal store (used inside container)
+        uses: actions/cache@v4
+        with:
+          path: .ci-cache/${{ matrix.arch }}/cabal
+          key: cabal-musl-${{ matrix.arch }}-${{ hashFiles('**/*.cabal', 'cabal.project*') }}
+          restore-keys: |
+            cabal-musl-${{ matrix.arch }}-
+
+      - name: Build haskell-ci statically with musl (via Alpine container)
+        env:
+          SHORT_SHA: ${{ github.sha }}
+        run: |
+          set -euxo pipefail
+
+          # We run the build in an Alpine container to get musl-based toolchain.
+          # Mount the project at /src and a persistent cabal store at /root/.cabal.
+          docker run --rm \
+            -v "$PWD":/src \
+            -v "$PWD/.ci-cache/${{ matrix.arch }}/cabal":/root/.cabal \
+            -w /src \
+            ${{ matrix.alpine }} \
+            sh -exc '
+              apk add --no-cache \
+                ghc cabal-install \
+                gmp-static zlib-static libffi-static \
+                musl-dev gcc g++ make coreutils tar xz file
+
+              cabal update
+
+              # Build fully static:
+              #  - disable shared libs
+              #  - enable static executables
+              #  - link flags to enforce static and pthread
+              cabal build -j exe:haskell-ci \
+                --disable-shared \
+                --enable-executable-static \
+                --disable-executable-dynamic \
+                --ghc-options="-optl-static -optl-pthread -fPIC"
+
+              BIN_PATH="$(cabal list-bin exe:haskell-ci)"
+
+              # Verify static
+              file "$BIN_PATH"
+              if file "$BIN_PATH" | grep -qi "statically linked"; then
+                echo "Static binary confirmed."
+              else
+                echo "Binary is not static!" >&2
+                exit 1
+              fi
+
+              # Package
+              BASENAME="haskell-ci-${{ matrix.arch }}-musl-static"
+              BINNAME="haskell-ci"
+              cp "${BIN_PATH}" "./out/${BINNAME}"
+              strip "./out/${BINNAME}" || true
+              tar -C out -czf "./out/${BASENAME}.tar.gz" "${BINNAME}"
+              (cd out && sha256sum "${BASENAME}.tar.gz" > "${BASENAME}.tar.gz.sha256")
+            '
+
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.arch }}-musl-static
+          path: |
+            out/haskell-ci-${{ matrix.arch }}-musl-static.tar.gz
+            out/haskell-ci-${{ matrix.arch }}-musl-static.tar.gz.sha256
+
+  release:
+    name: Upload both binaries to release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+
+      - name: Publish/Update rolling "continuous" prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: continuous
+          name: Continuous builds (musl static)
+          body: |
+            Unofficial musl-static binaries for every upstream master commit.
+            Assets: both x86_64 and aarch64.
+          prerelease: true
+          files: |
+            all-artifacts/x86_64-musl-static/haskell-ci-x86_64-musl-static.tar.gz
+            all-artifacts/x86_64-musl-static/haskell-ci-x86_64-musl-static.tar.gz.sha256
+            all-artifacts/aarch64-musl-static/haskell-ci-aarch64-musl-static.tar.gz
+            all-artifacts/aarch64-musl-static/haskell-ci-aarch64-musl-static.tar.gz.sha256
+

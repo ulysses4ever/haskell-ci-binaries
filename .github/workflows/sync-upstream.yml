@@ -1,0 +1,44 @@
+name: Sync upstream haskell-CI/haskell-ci (preserve workflows)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/10 * * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Mirror upstream master (preserving workflows)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current mirror
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/haskell-CI/haskell-ci.git || true
+          git fetch upstream
+
+      - name: Sync everything except .github/
+        run: |
+          # Checkout all files from upstream/master, except .github/
+          git checkout upstream/master -- .
+          # Remove files deleted upstream
+          git ls-tree -r --name-only upstream/master | xargs -I{} rm -f "{}"
+          # Restore .github from HEAD if needed
+          git restore .github
+
+      - name: Commit and push changes
+        run: |
+          git add -A
+          git commit -m "Mirror upstream/master (preserving workflows)" || echo "No changes to commit"
+          git push origin master
