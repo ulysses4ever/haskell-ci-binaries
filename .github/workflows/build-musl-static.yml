@@ -58,8 +58,8 @@ jobs:
             ${{ matrix.alpine }} \
             sh -exc '
               apk add --no-cache \
-                ghc cabal-install \
-                gmp-static zlib-static libffi-static \
+                ghc cabal \
+                gmp-dev zlib-static libffi-dev \
                 musl-dev gcc g++ make coreutils tar xz file
 
               cabal update
