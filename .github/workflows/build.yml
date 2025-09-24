@@ -1,0 +1,233 @@
+name: Build and publish musl-static binaries
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *" # every day at 3 am utc
+
+permissions:
+  contents: write  # required for creating/updating releases and committing state
+
+concurrency:
+  group: continuous-musl
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Detect latest upstream commit
+    runs-on: ubuntu-latest
+    outputs:
+      upstream_sha: ${{ steps.detect.outputs.upstream_sha }}
+      should_build: ${{ steps.detect.outputs.should_build }}
+    steps:
+      - name: Checkout this repo (for state file)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine latest upstream/master SHA
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          UPSTREAM_REPO="https://github.com/haskell-CI/haskell-ci.git"
+          BRANCH_REF="refs/heads/master"
+
+          # Fetch latest SHA without cloning the repo
+          LATEST_SHA="$(git ls-remote "$UPSTREAM_REPO" "$BRANCH_REF" | awk '{print $1}')"
+          if [[ -z "${LATEST_SHA}" ]]; then
+            echo "Failed to resolve latest upstream SHA" >&2
+            echo "upstream_sha=" >> "$GITHUB_OUTPUT"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mkdir -p .state
+          LAST_BUILT_SHA="$(cat .state/last_upstream_sha.txt 2>/dev/null || true)"
+
+          echo "Latest upstream SHA: ${LATEST_SHA}"
+          echo "Last built SHA:      ${LAST_BUILT_SHA:-<none>}"
+
+          SHOULD_BUILD="false"
+          if [[ "${LATEST_SHA}" != "${LAST_BUILT_SHA}" ]]; then
+            SHOULD_BUILD="true"
+          fi
+
+          echo "upstream_sha=${LATEST_SHA}" >> "$GITHUB_OUTPUT"
+          echo "should_build=${SHOULD_BUILD}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build musl static (${{ matrix.arch }})
+    needs: detect
+    if: needs.detect.outputs.should_build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+            alpine: alpine:3.20
+          - arch: aarch64
+            runner: ubuntu-24.04-arm64
+            alpine: alpine:3.20
+    runs-on: ${{ matrix.runner }}
+    env:
+      UPSTREAM_SHA: ${{ needs.detect.outputs.upstream_sha }}
+    steps:
+      - name: Prepare workspace
+        run: |
+          set -eux
+          mkdir -p upstream-src out .ci-cache/${{ matrix.arch }}/cabal
+
+      - name: Cache cabal store (persists across runs)
+        uses: actions/cache@v4
+        with:
+          path: .ci-cache/${{ matrix.arch }}/cabal
+          key: cabal-musl-${{ matrix.arch }}-${{ needs.detect.outputs.upstream_sha }}
+          restore-keys: |
+            cabal-musl-${{ matrix.arch }}-
+
+      - name: Fetch upstream source at exact SHA
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd upstream-src
+          git init
+          git remote add origin https://github.com/haskell-CI/haskell-ci.git
+          git fetch --depth 1 origin "${UPSTREAM_SHA}"
+          git checkout --detach FETCH_HEAD
+          git rev-parse HEAD
+
+      - name: Build haskell-ci statically (musl via Alpine)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # Build inside Alpine (musl). Mount source, cache, and output directories.
+          docker run --rm \
+            -v "$PWD/upstream-src":/src \
+            -v "$PWD/.ci-cache/${{ matrix.arch }}/cabal":/root/.cabal \
+            -v "$PWD/out":/out \
+            -w /src \
+            ${{ matrix.alpine }} \
+            sh -exc '
+              apk add --no-cache \
+                ghc cabal\
+                gmp-dev zlib-static libffi-dev \
+                musl-dev gcc g++ make coreutils tar xz file binutils
+
+              cabal update
+
+              # Build fully static:
+              cabal build -j exe:haskell-ci \
+                --disable-shared \
+                --enable-executable-static \
+                --disable-executable-dynamic \
+                --ghc-options="-optl-static -optl-pthread -fPIC"
+
+              BIN_PATH="$(cabal list-bin exe:haskell-ci)"
+              file "$BIN_PATH"
+              if ! file "$BIN_PATH" | grep -qi "statically linked"; then
+                echo "Binary is not static!" >&2
+                exit 1
+              fi
+
+              # Produce a tar.gz with a single binary named exactly "haskell-ci"
+              cp "$BIN_PATH" /out/haskell-ci
+              strip /out/haskell-ci || true
+              tar -C /out -czf "/out/haskell-ci-${{ matrix.arch }}-musl-static.tar.gz" "haskell-ci"
+              (cd /out && sha256sum "haskell-ci-${{ matrix.arch }}-musl-static.tar.gz" > "haskell-ci-${{ matrix.arch }}-musl-static.tar.gz.sha256")
+            '
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.arch }}
+          path: |
+            out/haskell-ci-${{ matrix.arch }}-musl-static.tar.gz
+            out/haskell-ci-${{ matrix.arch }}-musl-static.tar.gz.sha256
+
+  release:
+    name: Publish release assets
+    needs: [detect, build]
+    if: needs.detect.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM_SHA: ${{ needs.detect.outputs.upstream_sha }}
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout this repo (to update state file)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare upstream metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          UPSTREAM_URL="https://github.com/haskell-CI/haskell-ci/commit/${UPSTREAM_SHA}"
+          {
+            echo "upstream_repo=haskell-CI/haskell-ci"
+            echo "upstream_branch=master"
+            echo "upstream_commit=${UPSTREAM_SHA}"
+            echo "upstream_commit_url=${UPSTREAM_URL}"
+            echo "built_at=${NOW}"
+          } | tee out/upstream.txt
+
+          # Compose release notes
+          NOTES=$(
+            cat <<EOF
+Unofficial musl-static binaries for upstream haskell-CI/haskell-ci master.
+
+Upstream commit: ${UPSTREAM_SHA}
+${UPSTREAM_URL}
+
+This tag is continuously updated. Assets have stable names:
+- haskell-ci-x86_64-musl-static.tar.gz
+- haskell-ci-aarch64-musl-static.tar.gz
+
+Each tarball contains a single executable named: haskell-ci
+EOF
+          )
+          # Save for later step
+          printf "%s" "${NOTES}" > out/release_notes.txt
+
+      - name: Ensure 'continuous' release exists and upload assets (clobber)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Create or update the release
+          if ! gh release view continuous >/dev/null 2>&1; then
+            gh release create continuous --title "Continuous musl-static builds" --notes-file out/release_notes.txt --prerelease
+          else
+            gh release edit continuous --notes-file out/release_notes.txt --prerelease
+          fi
+
+          # Upload assets with stable names, overwriting previous
+          gh release upload continuous \
+            "artifacts/x86_64/haskell-ci-x86_64-musl-static.tar.gz" \
+            "artifacts/x86_64/haskell-ci-x86_64-musl-static.tar.gz.sha256" \
+            "artifacts/aarch64/haskell-ci-aarch64-musl-static.tar.gz" \
+            "artifacts/aarch64/haskell-ci-aarch64-musl-static.tar.gz.sha256" \
+            "out/upstream.txt" \
+            --clobber
+
+      - name: Update last upstream SHA in repo
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p .state
+          echo "${UPSTREAM_SHA}" > .state/last_upstream_sha.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .state/last_upstream_sha.txt
+          git commit -m "ci: update last upstream sha to ${UPSTREAM_SHA}" || echo "No changes to commit"
+          git push origin HEAD:$(git rev-parse --abbrev-ref HEAD || echo master)
