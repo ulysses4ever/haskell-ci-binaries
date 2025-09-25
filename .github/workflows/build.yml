@@ -67,9 +67,9 @@ jobs:
           - arch: linux-x86_64
             runner: ubuntu-22.04
             alpine: public.ecr.aws/docker/library/alpine:3.20
-          - arch: macos-aarch64
-            runner: macos-latest
-            alpine: public.ecr.aws/docker/library/alpine:3.20
+          # - arch: linux-aarch64
+          #   runner: ubuntu-24.04-arm # one day....
+          #   alpine: public.ecr.aws/docker/library/alpine:3.20
     runs-on: ${{ matrix.runner }}
     env:
       UPSTREAM_SHA: ${{ needs.detect.outputs.upstream_sha }}
@@ -203,8 +203,6 @@ jobs:
           gh release upload continuous \
             "artifacts/x86_64/haskell-ci-linux-x86_64-musl-static.tar.gz" \
             "artifacts/x86_64/haskell-ci-linux-x86_64-musl-static.tar.gz.sha256" \
-            "artifacts/aarch64/haskell-ci-macos-aarch64-musl-static.tar.gz" \
-            "artifacts/aarch64/haskell-ci-macos-aarch64-musl-static.tar.gz.sha256" \
             "out/upstream.txt" \
             --clobber
 
