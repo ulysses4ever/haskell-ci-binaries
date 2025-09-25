@@ -64,11 +64,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: x86_64
+          - arch: linux-x86_64
             runner: ubuntu-22.04
             alpine: public.ecr.aws/docker/library/alpine:3.20
-          - arch: aarch64
-            runner: ubuntu-24.04-arm64
+          - arch: macos-aarch64
+            runner: macos-latest
             alpine: public.ecr.aws/docker/library/alpine:3.20
     runs-on: ${{ matrix.runner }}
     env:
@@ -185,10 +185,6 @@ jobs:
           Upstream commit: ${UPSTREAM_SHA}
           ${UPSTREAM_URL}
 
-          This tag is continuously updated. Assets have stable names:
-          - haskell-ci-x86_64-musl-static.tar.gz
-          - haskell-ci-aarch64-musl-static.tar.gz
-
           Each tarball contains a single executable named: haskell-ci
           EOF
 
@@ -205,10 +201,10 @@ jobs:
 
           # Upload assets with stable names, overwriting previous
           gh release upload continuous \
-            "artifacts/x86_64/haskell-ci-x86_64-musl-static.tar.gz" \
-            "artifacts/x86_64/haskell-ci-x86_64-musl-static.tar.gz.sha256" \
-            "artifacts/aarch64/haskell-ci-aarch64-musl-static.tar.gz" \
-            "artifacts/aarch64/haskell-ci-aarch64-musl-static.tar.gz.sha256" \
+            "artifacts/x86_64/haskell-ci-linux-x86_64-musl-static.tar.gz" \
+            "artifacts/x86_64/haskell-ci-linux-x86_64-musl-static.tar.gz.sha256" \
+            "artifacts/aarch64/haskell-ci-macos-aarch64-musl-static.tar.gz" \
+            "artifacts/aarch64/haskell-ci-macos-aarch64-musl-static.tar.gz.sha256" \
             "out/upstream.txt" \
             --clobber
 
