@@ -201,8 +201,8 @@ jobs:
 
           # Upload assets with stable names, overwriting previous
           gh release upload continuous \
-            "artifacts/x86_64/haskell-ci-linux-x86_64-musl-static.tar.gz" \
-            "artifacts/x86_64/haskell-ci-linux-x86_64-musl-static.tar.gz.sha256" \
+            "artifacts/linux-x86_64/haskell-ci-linux-x86_64-musl-static.tar.gz" \
+            "artifacts/linux-x86_64/haskell-ci-linux-x86_64-musl-static.tar.gz.sha256" \
             "out/upstream.txt" \
             --clobber
 
